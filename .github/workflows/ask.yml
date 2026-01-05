@@ -1,0 +1,105 @@
+name: Voot Auto Scraper
+
+on:
+  schedule:
+    - cron: "0 */3 * * *"  
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name:  Checkout repository
+        uses: actions/checkout@v4
+
+      - name:  Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run Voot Scraper (inline)
+        run: |
+          python <<'PY'
+          import json, re, requests
+          from bs4 import BeautifulSoup
+
+          INPUT_FILE = "voot.json"
+          OUTPUT_JSON = "voot_api.json"
+          OUTPUT_M3U = "vootPlaylist.m3u"
+
+          BASE_HEADERS = {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+              "Referer": "https://watchofree.beer/"
+          }
+
+          def get_iframe_src(page_url):
+              try:
+                  r = requests.get(page_url, headers=BASE_HEADERS, timeout=15)
+                  r.raise_for_status()
+                  soup = BeautifulSoup(r.text, "html.parser")
+                  iframe = soup.find("iframe")
+                  return iframe["src"] if iframe and iframe.get("src") else None
+              except Exception as e:
+                  print(f"[!] iframe error {page_url}: {e}")
+                  return None
+
+          def get_playback_data(iframe_url):
+              try:
+                  headers = BASE_HEADERS.copy()
+                  headers["Referer"] = "https://speedostream1.com/"
+                  r = requests.get(iframe_url, headers=headers, timeout=15)
+                  r.raise_for_status()
+                  html = r.text
+                  file_match = re.search(r'file\s*:\s*"([^"]+\.m3u8[^"]*)"', html)
+                  img_match = re.search(r'image\s*:\s*"([^"]+)"', html)
+                  if file_match:
+                      return {
+                          "playbackUrl": file_match.group(1),
+                          "playbackHeaders": {"referer": "https://speedostream1.com/"},
+                          "playerImg": img_match.group(1) if img_match else ""
+                      }
+              except Exception as e:
+                  print(f"[!] playback error {iframe_url}: {e}")
+              return None
+
+          try:
+              with open(INPUT_FILE, "r", encoding="utf-8") as f:
+                  data = json.load(f)
+          except Exception as e:
+              print(f"Cannot open {INPUT_FILE}: {e}")
+              exit(1)
+
+          out_movies, m3u = [], ["#EXTM3U"]
+
+          for mv in data.get("movies", []):
+              title = mv["title"]
+              print(f"[*] Processing {title}")
+              iframe = get_iframe_src(mv["links"]["watch"])
+              if not iframe:
+                  print(f"[-] iframe missing for {title}")
+                  continue
+              playback = get_playback_data(iframe)
+              if not playback:
+                  print(f"[-] playback missing for {title}")
+                  continue
+              mv["links"] = playback
+              out_movies.append(mv)
+              m3u.append(f'#EXTINF:-1 tvg-id="{title}" tvg-name="{title}" tvg-logo="{playback["playerImg"]}" group-title="Channels",{title}')
+              m3u.append(f'{playback["playbackUrl"]}|referer={playback["playbackHeaders"]["referer"]}')
+
+          with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
+              json.dump({"movies": out_movies}, f, indent=2, ensure_ascii=False)
+
+          with open(OUTPUT_M3U, "w", encoding="utf-8") as f:
+              f.write("\n".join(m3u))
+
+          print("Done: Generated voot_api.json and vootPlaylist.m3u")
+          PY
+
+      - name:  Commit and Push Updates
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add voot_api.json vootPlaylist.m3u
+          git diff --quiet && echo "No changes to commit" || (git commit -m "Auto update Voot data [skip ci]" && git push)
