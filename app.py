@@ -121,7 +121,8 @@ def fetch_movie_stream_exact(movie_id, title, se, ep, fallback_token, detail_pat
 
     token = session.cookies.get('mb_auth_token') or session.cookies.get('mb_token') or fallback_token
 
-    play_api_url = f"{CONFIG['play_api']}?subjectId={movie_id}&se={se}&ep={ep}&detailPath={detail_path}&streamSignType=1&supportCodecs%5Bh264%5D=1"
+    # Added &needSubtitle=1 just in case the API requires it
+    play_api_url = f"{CONFIG['play_api']}?subjectId={movie_id}&se={se}&ep={ep}&detailPath={detail_path}&streamSignType=1&supportCodecs%5Bh264%5D=1&needSubtitle=1"
     
     api_headers = {
         'accept': 'application/json, text/plain, */*',
@@ -149,17 +150,39 @@ def fetch_movie_stream_exact(movie_id, title, se, ep, fallback_token, detail_pat
         sign_cookie = ''
         subtitles = []
 
-        # -- NEW: Extract Subtitles --
-        raw_subs = data['data'].get('subtitles', [])
-        if isinstance(raw_subs, list):
-            for sub in raw_subs:
-                if isinstance(sub, dict) and sub.get('url'):
-                    # Trying to catch language gracefully
-                    lang = sub.get('language') or sub.get('lang') or sub.get('name') or 'Unknown'
-                    subtitles.append({
-                        'language': lang,
-                        'url': sub.get('url')
-                    })
+        # -- UPDATED: Extract Subtitles Aggressively --
+        def parse_subs(sub_data):
+            res = []
+            if isinstance(sub_data, list):
+                for sub in sub_data:
+                    if isinstance(sub, dict):
+                        u = sub.get('url') or sub.get('file') or sub.get('src') or sub.get('subtitleUrl')
+                        if u and isinstance(u, str) and u.startswith('http'):
+                            lang = sub.get('language') or sub.get('lang') or sub.get('name') or 'Unknown'
+                            res.append({'language': lang, 'url': u})
+            return res
+
+        # 1. Search common keys in Play API
+        subtitles.extend(parse_subs(data['data'].get('subtitles')))
+        subtitles.extend(parse_subs(data['data'].get('subtitle')))
+        subtitles.extend(parse_subs(data['data'].get('subtitleList')))
+        subtitles.extend(parse_subs(data['data'].get('captions')))
+
+        # 2. Search common keys in Detail Page Data
+        if not subtitles and full_detail_data:
+            subtitles.extend(parse_subs(full_detail_data.get('subtitles')))
+            subtitles.extend(parse_subs(full_detail_data.get('subtitle')))
+            subtitles.extend(parse_subs(full_detail_data.get('subtitleList')))
+
+        # 3. Ultimate Fallback: Regex search for any .srt or .vtt links in the raw data
+        if not subtitles:
+            raw_text = json.dumps(data) + json.dumps(full_detail_data)
+            sub_matches = re.findall(r'https?://[^\s"\'\\]+\.(?:srt|vtt)[^\s"\'\\]*', raw_text)
+            for i, match in enumerate(set(sub_matches)):
+                subtitles.append({'language': f'Subtitle {i+1}', 'url': match})
+            
+        # Deduplicate subtitles by URL
+        subtitles = list({sub['url']: sub for sub in subtitles}.values())
 
         # Priority MP4
         if data['data'].get('streams'):
