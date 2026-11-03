@@ -51,7 +51,7 @@ def get_stealth_headers(token="", base_domain=""):
     return headers
 
 def fetch_initial_token_and_cookie():
-    # সরাসরি মুভি ফিল্টার পেজে হিট করলে টোকেন পাওয়ার সম্ভাবনা ১০০%
+    # সরাসরি মুভি ফিল্টার পেজে হিট করলে টোকেন পাওয়ার সম্ভাবনা ১০০%
     url = f"{CONFIG['base_domain']}/web/film?type=/home/movieFilter"
     headers = get_stealth_headers(base_domain=CONFIG['base_domain'])
     
@@ -147,6 +147,19 @@ def fetch_movie_stream_exact(movie_id, title, se, ep, fallback_token, detail_pat
         quality = None
         stream_type = 'm3u8'
         sign_cookie = ''
+        subtitles = []
+
+        # -- NEW: Extract Subtitles --
+        raw_subs = data['data'].get('subtitles', [])
+        if isinstance(raw_subs, list):
+            for sub in raw_subs:
+                if isinstance(sub, dict) and sub.get('url'):
+                    # Trying to catch language gracefully
+                    lang = sub.get('language') or sub.get('lang') or sub.get('name') or 'Unknown'
+                    subtitles.append({
+                        'language': lang,
+                        'url': sub.get('url')
+                    })
 
         # Priority MP4
         if data['data'].get('streams'):
@@ -174,7 +187,8 @@ def fetch_movie_stream_exact(movie_id, title, se, ep, fallback_token, detail_pat
             'streamType': stream_type,
             'signCookie': sign_cookie,
             'pageDescription': page_description,
-            'fullDetailData': full_detail_data
+            'fullDetailData': full_detail_data,
+            'subtitles': subtitles # Included in return payload
         }
     except Exception:
         return None
@@ -248,6 +262,7 @@ def format_to_desired_json(movie, stream_info, config):
         "quality": "HD",
         "resolution": str(stream_info.get('quality', 'HD') if stream_info else 'HD'),
         "streamType": str(stream_info.get('streamType', 'm3u8') if stream_info else 'm3u8'),
+        "subtitles": stream_info.get('subtitles', []) if stream_info else [], # -- NEW: Added mapped subtitles --
         "headers": {
             "referer": f"{config['base_domain']}/",
             "origin": config['base_domain'],
@@ -390,6 +405,7 @@ if __name__ == "__main__":
                 all_movies[idx]['downUrl'] = stream_info['url']
                 all_movies[idx]['resolution'] = stream_info.get('quality', 'HD')
                 all_movies[idx]['streamType'] = stream_info.get('streamType', 'm3u8')
+                all_movies[idx]['subtitles'] = stream_info.get('subtitles', []) # -- NEW: Refreshing Subtitles --
                 
                 # Refresh Cookie in headers safely
                 if 'headers' not in all_movies[idx]: all_movies[idx]['headers'] = {}
